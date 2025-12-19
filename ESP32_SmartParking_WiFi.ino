@@ -424,6 +424,8 @@ void loop() {
     lcd.print("Please Wait");
     
     if (callEntryAPI(uid)) {
+      delay(2000);  // Show "Entry Granted!" message
+      
       openGate5Sec();
       
       entryTime = millis();
@@ -431,14 +433,16 @@ void loop() {
       carInside = true;
       occupiedCount++;  // Increment occupied count
 
-      delay(2000);
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Gate Closing...");
       lcd.setCursor(0, 1);
       lcd.print("Drive Safely");
       delay(2000);
+      
+      // Reset to normal display cycle
       lastLCDUpdateTime = millis();
+      showWelcome = true;
     }
   }
 
@@ -458,6 +462,8 @@ void loop() {
     delay(2000);
 
     if (callExitAPI(uid, durationMin)) {
+      delay(2000);  // Show "Exit Success!" and fee message
+      
       openGate5Sec();
 
       Serial.print("PARK TIME (min): ");
@@ -470,14 +476,16 @@ void loop() {
       occupiedCount--;  // Decrement occupied count
       if (occupiedCount < 0) occupiedCount = 0;
 
-      delay(3000);
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Thank You!");
       lcd.setCursor(0, 1);
       lcd.print("Drive Safely");
       delay(2000);
+      
+      // Reset to normal display cycle
       lastLCDUpdateTime = millis();
+      showWelcome = true;
     }
   }
 
@@ -489,6 +497,9 @@ void loop() {
     lcd.setCursor(0, 1);
     lcd.print("Access Denied");
     delay(2000);
+    
+    // Reset to normal display cycle
     lastLCDUpdateTime = millis();
+    showWelcome = true;
   }
 }
