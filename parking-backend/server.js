@@ -639,10 +639,12 @@ app.post("/update-slots", async (req, res) => {
     const connection = await pool.getConnection();
 
     for (const slot of slots) {
-      const status = slot.occupied ? "occupied" : "available";
+      // Accept either 'occupied'/'available' or boolean 'occupied' field
+      const status = slot.status || (slot.occupied ? "occupied" : "available");
+      
       await connection.query(
-        "UPDATE slots SET status = ? WHERE id = ?",
-        [status, slot.id]
+        "UPDATE slots SET status = ? WHERE slot_number = ?",
+        [status, slot.slotNumber]
       );
     }
 

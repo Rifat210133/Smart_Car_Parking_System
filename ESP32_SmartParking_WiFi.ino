@@ -24,6 +24,10 @@ Servo gate;
 /* ------------ LCD ------------- */
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
+/* ------------ IR SENSORS ----------- */
+#define IR_SLOT1 32  // IR sensor for slot 1
+#define IR_SLOT2 33  // IR sensor for slot 2
+
 /* --------- VARIABLES ---------- */
 String activeUID = "";
 unsigned long entryTime = 0;
@@ -31,6 +35,12 @@ bool carInside = false;
 unsigned long lastScanTime = 0;
 int assignedSlotId = 0;
 String assignedSlotNumber = "";
+
+// Slot monitoring variables
+bool slot1Occupied = false;
+bool slot2Occupied = false;
+unsigned long lastSlotUpdateTime = 0;
+const unsigned long SLOT_UPDATE_INTERVAL = 2000;  // Update every 2 seconds
 
 /* ============================== */
 
@@ -260,6 +270,54 @@ bool callExitAPI(String rfid, unsigned long durationMin) {
   return false;
 }
 
+void updateSlotStatus() {
+  // Read IR sensors (LOW = car detected, HIGH = no car)
+  bool slot1Detected = (digitalRead(IR_SLOT1) == LOW);
+  bool slot2Detected = (digitalRead(IR_SLOT2) == LOW);
+
+  // Check if status changed
+  if (slot1Detected != slot1Occupied || slot2Detected != slot2Occupied) {
+    slot1Occupied = slot1Detected;
+    slot2Occupied = slot2Detected;
+
+    Serial.println("Slot status changed:");
+    Serial.print("Slot 1: ");
+    Serial.println(slot1Occupied ? "OCCUPIED" : "FREE");
+    Serial.print("Slot 2: ");
+    Serial.println(slot2Occupied ? "OCCUPIED" : "FREE");
+
+    // Send update to server
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      String url = String(serverURL) + "/update-slots";
+      
+      http.begin(url);
+      http.addHeader("Content-Type", "application/json");
+      
+      // Create JSON payload with slot statuses
+      String payload = "{\"slots\":[";
+      payload += "{\"slotNumber\":\"A01\",\"status\":\"" + String(slot1Occupied ? "occupied" : "available") + "\"},";
+      payload += "{\"slotNumber\":\"A02\",\"status\":\"" + String(slot2Occupied ? "occupied" : "available") + "\"}";
+      payload += "]}";
+      
+      Serial.println("Updating server...");
+      Serial.println("Payload: " + payload);
+      
+      int httpCode = http.POST(payload);
+      
+      if (httpCode > 0) {
+        String response = http.getString();
+        Serial.println("Server response: " + response);
+      } else {
+        Serial.print("Update failed: ");
+        Serial.println(httpCode);
+      }
+      
+      http.end();
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -275,6 +333,10 @@ void setup() {
   /* Servo */
   gate.attach(SERVO_PIN);
   gate.write(0);
+
+  /* IR Sensors */
+  pinMode(IR_SLOT1, INPUT);
+  pinMode(IR_SLOT2, INPUT);
 
   /* RFID */
   SPI.begin(18, 19, 23, SS_PIN);
@@ -299,6 +361,12 @@ void loop() {
     connectWiFi();
     lcd.clear();
     lcd.print("Scan RFID");
+  }
+
+  // Update slot status periodically
+  if (millis() - lastSlotUpdateTime > SLOT_UPDATE_INTERVAL) {
+    updateSlotStatus();
+    lastSlotUpdateTime = millis();
   }
 
   if (millis() - lastScanTime < 1500) return;
