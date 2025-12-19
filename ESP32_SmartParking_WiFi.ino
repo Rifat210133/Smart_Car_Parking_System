@@ -8,8 +8,8 @@
 #include <ArduinoJson.h>
 
 /* ========== WiFi Configuration ========== */
-const char* ssid = "YOUR_WIFI_SSID";          // Change to your WiFi name
-const char* password = "YOUR_WIFI_PASSWORD";  // Change to your WiFi password
+const char* ssid = "MM-227";          // Change to your WiFi name
+const char* password = "Galib@cse";  // Change to your WiFi password
 const char* serverURL = "http://192.168.0.103:3000";  // Your backend server IP
 
 /* ------------ RFID ------------ */

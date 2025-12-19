@@ -395,6 +395,7 @@ app.post("/rfid-exit", async (req, res) => {
     );
 
     if (sessions.length === 0) {
+      connection.release();
       return res.json({ allowed: false, message: "No active session" });
     }
 
@@ -415,7 +416,8 @@ app.post("/rfid-exit", async (req, res) => {
     const user = users[0];
 
     if (user.balance < fee) {
-      return res.json({ allowed: false, message: "Insufficient Balance" });
+      connection.release();
+      return res.json({ allowed: false, message: "Low Balance, Refill" });
     }
 
     // Update user balance
@@ -440,7 +442,7 @@ app.post("/rfid-exit", async (req, res) => {
       allowed: true,
       duration: durationMin,
       fee,
-      balance: user.balance - fee,
+      newBalance: user.balance - fee,
     });
   } catch (error) {
     console.error("Exit error:", error);
