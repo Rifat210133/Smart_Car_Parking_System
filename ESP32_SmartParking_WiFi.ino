@@ -42,6 +42,11 @@ bool slot2Occupied = false;
 unsigned long lastSlotUpdateTime = 0;
 const unsigned long SLOT_UPDATE_INTERVAL = 2000;  // Update every 2 seconds
 
+// LCD display variables
+unsigned long lastLCDUpdateTime = 0;
+const unsigned long LCD_UPDATE_INTERVAL = 3000;  // Alternate LCD every 3 seconds
+bool showWelcome = true;
+
 /* ============================== */
 
 void connectWiFi() {
@@ -149,7 +154,8 @@ bool callEntryAPI(String rfid) {
         assignedSlotNumber = String((const char*)doc["slotNumber"]);
         
         lcd.clear();
-        lcd.print("ENTRY GRANTED");
+        lcd.setCursor(0, 0);
+        lcd.print("Entry Granted!");
         lcd.setCursor(0, 1);
         lcd.print("Slot: ");
         lcd.print(assignedSlotNumber);
@@ -159,7 +165,8 @@ bool callEntryAPI(String rfid) {
         return true;
       } else {
         lcd.clear();
-        lcd.print("ENTRY DENIED");
+        lcd.setCursor(0, 0);
+        lcd.print("Entry Denied!");
         lcd.setCursor(0, 1);
         lcd.print(message);
         
@@ -223,29 +230,23 @@ bool callExitAPI(String rfid, unsigned long durationMin) {
         float newBalance = doc["newBalance"];
         
         lcd.clear();
-        lcd.print("EXIT OK");
+        lcd.setCursor(0, 0);
+        lcd.print("Exit Success!");
         lcd.setCursor(0, 1);
-        lcd.print("Fee: ");
+        lcd.print("Fee: Tk ");
         lcd.print(fee);
-        lcd.print(" Tk");
         
         Serial.print("Exit approved. Fee: ");
         Serial.print(fee);
         Serial.print(" Tk, Balance: ");
         Serial.println(newBalance);
         
-        delay(3000);
-        
-        lcd.clear();
-        lcd.print("Balance: ");
-        lcd.print(newBalance);
-        lcd.print(" Tk");
-        
         http.end();
         return true;
       } else {
         lcd.clear();
-        lcd.print("EXIT DENIED");
+        lcd.setCursor(0, 0);
+        lcd.print("Exit Denied!");
         lcd.setCursor(0, 1);
         lcd.print(message);
         
@@ -268,6 +269,33 @@ bool callExitAPI(String rfid, unsigned long durationMin) {
   
   http.end();
   return false;
+}
+
+void updateLCDDisplay() {
+  int freeSlots = 0;
+  if (!slot1Occupied) freeSlots++;
+  if (!slot2Occupied) freeSlots++;
+
+  lcd.clear();
+  if (showWelcome) {
+    lcd.setCursor(0, 0);
+    lcd.print("Welcome To");
+    lcd.setCursor(0, 1);
+    lcd.print("Smart Parking");
+  } else {
+    lcd.setCursor(0, 0);
+    if (freeSlots > 0) {
+      lcd.print("Slots Available:");
+      lcd.setCursor(0, 1);
+      lcd.print(freeSlots);
+      lcd.print(" Space(s) Free");
+    } else {
+      lcd.print("Parking Full");
+      lcd.setCursor(0, 1);
+      lcd.print("No Space Available");
+    }
+  }
+  showWelcome = !showWelcome;
 }
 
 void updateSlotStatus() {
@@ -348,7 +376,11 @@ void setup() {
   connectWiFi();
 
   lcd.clear();
-  lcd.print("Scan RFID");
+  lcd.setCursor(0, 0);
+  lcd.print("Welcome To");
+  lcd.setCursor(0, 1);
+  lcd.print("Smart Parking");
+  delay(3000);
 }
 
 void loop() {
@@ -369,6 +401,12 @@ void loop() {
     lastSlotUpdateTime = millis();
   }
 
+  // Update LCD display periodically (only when no car activity)
+  if (!carInside && millis() - lastLCDUpdateTime > LCD_UPDATE_INTERVAL) {
+    updateLCDDisplay();
+    lastLCDUpdateTime = millis();
+  }
+
   if (millis() - lastScanTime < 1500) return;
 
   String uid = readRFID();
@@ -379,7 +417,10 @@ void loop() {
   /* -------- ENTRY -------- */
   if (!carInside) {
     lcd.clear();
-    lcd.print("Checking...");
+    lcd.setCursor(0, 0);
+    lcd.print("Verifying...");
+    lcd.setCursor(0, 1);
+    lcd.print("Please Wait");
     
     if (callEntryAPI(uid)) {
       openGate5Sec();
@@ -390,13 +431,13 @@ void loop() {
 
       delay(2000);
       lcd.clear();
-      lcd.print("Car Inside");
+      lcd.setCursor(0, 0);
+      lcd.print("Parked at");
       lcd.setCursor(0, 1);
       lcd.print("Slot: ");
       lcd.print(assignedSlotNumber);
       delay(3000);
-      lcd.clear();
-      lcd.print("Scan RFID");
+      lastLCDUpdateTime = millis();
     }
   }
 
@@ -406,11 +447,12 @@ void loop() {
     if (durationMin == 0) durationMin = 1;
 
     lcd.clear();
-    lcd.print("Checking Exit...");
+    lcd.setCursor(0, 0);
+    lcd.print("Processing Exit");
     lcd.setCursor(0, 1);
-    lcd.print("Time: ");
+    lcd.print("Duration: ");
     lcd.print(durationMin);
-    lcd.print("m");
+    lcd.print("min");
     
     delay(2000);
 
@@ -436,11 +478,11 @@ void loop() {
   /* -------- WRONG CARD -------- */
   else {
     lcd.clear();
-    lcd.print("WRONG CARD");
+    lcd.setCursor(0, 0);
+    lcd.print("Wrong Card!");
     lcd.setCursor(0, 1);
-    lcd.print("Not Your Car!");
+    lcd.print("Access Denied");
     delay(2000);
-    lcd.clear();
-    lcd.print("Scan RFID");
+    lastLCDUpdateTime = millis();
   }
 }
