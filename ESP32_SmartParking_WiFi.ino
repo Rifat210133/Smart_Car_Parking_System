@@ -33,8 +33,8 @@ String activeUID = "";
 unsigned long entryTime = 0;
 bool carInside = false;
 unsigned long lastScanTime = 0;
-int assignedSlotId = 0;
-String assignedSlotNumber = "";
+int totalSlots = 2;  // Total parking slots available
+int occupiedCount = 0;  // Count of cars currently inside (not left yet)
 
 // Slot monitoring variables
 bool slot1Occupied = false;
@@ -150,17 +150,13 @@ bool callEntryAPI(String rfid) {
       const char* message = doc["message"];
       
       if (allowed) {
-        assignedSlotId = doc["slotId"];
-        assignedSlotNumber = String((const char*)doc["slotNumber"]);
-        
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Entry Granted!");
         lcd.setCursor(0, 1);
-        lcd.print("Slot: ");
-        lcd.print(assignedSlotNumber);
+        lcd.print("Welcome!");
         
-        Serial.println("Entry granted. Slot: " + assignedSlotNumber);
+        Serial.println("Entry granted.");
         http.end();
         return true;
       } else {
@@ -272,9 +268,14 @@ bool callExitAPI(String rfid, unsigned long durationMin) {
 }
 
 void updateLCDDisplay() {
-  int freeSlots = 0;
-  if (!slot1Occupied) freeSlots++;
-  if (!slot2Occupied) freeSlots++;
+  // Calculate physically occupied slots from IR sensors
+  int physicallyOccupied = 0;
+  if (slot1Occupied) physicallyOccupied++;
+  if (slot2Occupied) physicallyOccupied++;
+  
+  // Available slots = total - physically occupied - cars entered but not parked yet
+  int availableSlots = totalSlots - physicallyOccupied - occupiedCount;
+  if (availableSlots < 0) availableSlots = 0;
 
   lcd.clear();
   if (showWelcome) {
@@ -284,10 +285,10 @@ void updateLCDDisplay() {
     lcd.print("Smart Parking");
   } else {
     lcd.setCursor(0, 0);
-    if (freeSlots > 0) {
+    if (availableSlots > 0) {
       lcd.print("Slots Available:");
       lcd.setCursor(0, 1);
-      lcd.print(freeSlots);
+      lcd.print(availableSlots);
       lcd.print(" Space(s) Free");
     } else {
       lcd.print("Parking Full");
@@ -428,15 +429,15 @@ void loop() {
       entryTime = millis();
       activeUID = uid;
       carInside = true;
+      occupiedCount++;  // Increment occupied count
 
       delay(2000);
       lcd.clear();
       lcd.setCursor(0, 0);
-      lcd.print("Parked at");
+      lcd.print("Gate Closing...");
       lcd.setCursor(0, 1);
-      lcd.print("Slot: ");
-      lcd.print(assignedSlotNumber);
-      delay(3000);
+      lcd.print("Drive Safely");
+      delay(2000);
       lastLCDUpdateTime = millis();
     }
   }
@@ -466,12 +467,17 @@ void loop() {
       carInside = false;
       activeUID = "";
       entryTime = 0;
-      assignedSlotId = 0;
-      assignedSlotNumber = "";
+      occupiedCount--;  // Decrement occupied count
+      if (occupiedCount < 0) occupiedCount = 0;
 
       delay(3000);
       lcd.clear();
-      lcd.print("Scan RFID");
+      lcd.setCursor(0, 0);
+      lcd.print("Thank You!");
+      lcd.setCursor(0, 1);
+      lcd.print("Drive Safely");
+      delay(2000);
+      lastLCDUpdateTime = millis();
     }
   }
 
