@@ -310,7 +310,9 @@ app.get("/admin/dashboard", authenticateToken, isAdmin, async (req, res) => {
       "SELECT COUNT(*) as count FROM parking_sessions WHERE status = 'active'"
     );
     
-    const [slots] = await pool.query("SELECT * FROM slots");
+    // Use real-time slot data from ESP32
+    const occupiedSlots = currentSlotStatus.slots.filter(s => s.status === "occupied").length;
+    const availableSlots = currentSlotStatus.totalSlots - occupiedSlots;
     
     res.json({
       totalUsers: totalUsers[0].count,
@@ -318,9 +320,9 @@ app.get("/admin/dashboard", authenticateToken, isAdmin, async (req, res) => {
       totalRevenue: totalRevenue[0].total || 0,
       todayRevenue: todayRevenue[0].total || 0,
       activeSessions: activeSessions[0].count,
-      totalSlots: slots.length,
-      occupiedSlots: slots.filter(s => s.status === "occupied").length,
-      availableSlots: slots.filter(s => s.status === "available").length
+      totalSlots: currentSlotStatus.totalSlots,
+      occupiedSlots,
+      availableSlots
     });
   } catch (error) {
     console.error("Admin dashboard error:", error);
@@ -346,34 +348,24 @@ app.post("/rfid-entry", async (req, res) => {
 
     const user = users[0];
 
-    // Get available slot
-    const [slots] = await connection.query(
-      "SELECT * FROM slots WHERE status = 'available' LIMIT 1"
-    );
-
-    if (slots.length === 0) {
-      return res.json({ allowed: false, message: "Parking Full" });
-    }
-
-    const slot = slots[0];
-
     if (user.balance <= 0) {
       return res.json({ allowed: false, message: "Low Balance" });
     }
 
-    // Update slot status
-    await connection.query(
-      "UPDATE slots SET status = 'occupied', rfid = ? WHERE id = ?",
-      [rfid, slot.id]
-    );
+    // Check if there are available slots (based on real-time IR sensor data)
+    const availableSlots = currentSlotStatus.slots.filter(s => s.status === "available");
+    
+    if (availableSlots.length === 0) {
+      return res.json({ allowed: false, message: "Parking Full" });
+    }
 
     // Create parking session
     await connection.query(
-      "INSERT INTO parking_sessions (rfid, slot_id, status) VALUES (?, ?, 'active')",
-      [rfid, slot.id]
+      "INSERT INTO parking_sessions (rfid, status) VALUES (?, 'active')",
+      [rfid]
     );
 
-    res.json({ allowed: true, slotId: slot.id, slotNumber: slot.slot_number });
+    res.json({ allowed: true, message: "Entry granted" });
   } catch (error) {
     console.error("Entry error:", error);
     res.status(500).json({ allowed: false, message: "Server error" });
@@ -432,11 +424,7 @@ app.post("/rfid-exit", async (req, res) => {
       [exitTime, durationMin, fee, session.id]
     );
 
-    // Update slot
-    await connection.query(
-      "UPDATE slots SET status = 'available', rfid = NULL WHERE id = ?",
-      [session.slot_id]
-    );
+    // Slot will be marked available when IR sensor detects car has left
 
     res.json({
       allowed: true,
@@ -452,11 +440,20 @@ app.post("/rfid-exit", async (req, res) => {
   }
 });
 
-// ===== APP DATA =====
+// ===== APP DATA (Real-time from ESP32) =====
 app.get("/parking-status", async (req, res) => {
   try {
-    const [slots] = await pool.query("SELECT * FROM slots ORDER BY id");
-    res.json({ slots });
+    // Return real-time slot status from ESP32 (not from database)
+    const occupied = currentSlotStatus.slots.filter(s => s.status === "occupied").length;
+    const available = currentSlotStatus.totalSlots - occupied;
+    
+    res.json({ 
+      slots: currentSlotStatus.slots,
+      totalSlots: currentSlotStatus.totalSlots,
+      occupied,
+      available,
+      lastUpdate: currentSlotStatus.lastUpdate
+    });
   } catch (error) {
     console.error("Get slots error:", error);
     res.status(500).json({ error: "Server error" });
@@ -466,16 +463,16 @@ app.get("/parking-status", async (req, res) => {
 // ===== DASHBOARD STATS =====
 app.get("/dashboard-stats", async (req, res) => {
   try {
-    const [slots] = await pool.query("SELECT * FROM slots");
     const [sessions] = await pool.query(
       "SELECT * FROM parking_sessions ORDER BY entry_time DESC LIMIT 10"
     );
 
-    const occupied = slots.filter((s) => s.status === "occupied").length;
-    const available = slots.length - occupied;
+    // Use real-time slot data from ESP32
+    const occupied = currentSlotStatus.slots.filter((s) => s.status === "occupied").length;
+    const available = currentSlotStatus.totalSlots - occupied;
 
     res.json({
-      totalSlots: slots.length,
+      totalSlots: currentSlotStatus.totalSlots,
       occupied,
       available,
       recentSessions: sessions,
@@ -631,26 +628,32 @@ app.get("/permissions", async (req, res) => {
   }
 });
 
-// ===== ESP32 SLOT UPDATE ENDPOINT =====
+// Store current slot status in memory (updated by ESP32)
+let currentSlotStatus = {
+  totalSlots: 2,
+  slots: [
+    { slotNumber: "A01", status: "available" },
+    { slotNumber: "A02", status: "available" }
+  ],
+  lastUpdate: new Date()
+};
+
+// ===== ESP32 SLOT STATUS UPDATE (Real-time from IR sensors) =====
 app.post("/update-slots", async (req, res) => {
   const { slots } = req.body;
   
   console.log("Slot update from ESP32:", slots);
 
   try {
-    const connection = await pool.getConnection();
-
-    for (const slot of slots) {
-      // Accept either 'occupied'/'available' or boolean 'occupied' field
-      const status = slot.status || (slot.occupied ? "occupied" : "available");
-      
-      await connection.query(
-        "UPDATE slots SET status = ? WHERE slot_number = ?",
-        [status, slot.slotNumber]
-      );
-    }
-
-    connection.release();
+    // Update in-memory slot status (no database storage)
+    currentSlotStatus.slots = slots.map(slot => ({
+      slotNumber: slot.slotNumber,
+      status: slot.status || (slot.occupied ? "occupied" : "available")
+    }));
+    currentSlotStatus.lastUpdate = new Date();
+    
+    console.log("Current slot status:", currentSlotStatus.slots);
+    
     res.json({ success: true, message: "Slots updated" });
   } catch (error) {
     console.error("Update slots error:", error);
@@ -661,17 +664,20 @@ app.post("/update-slots", async (req, res) => {
 // ===== ESP32 STATUS ENDPOINT =====
 app.get("/esp32-status", async (req, res) => {
   try {
-    const [slots] = await pool.query("SELECT * FROM slots ORDER BY id");
     const [activeSessions] = await pool.query(
       "SELECT COUNT(*) as count FROM parking_sessions WHERE status = 'active'"
     );
     
+    const occupied = currentSlotStatus.slots.filter(s => s.status === "occupied").length;
+    const available = currentSlotStatus.totalSlots - occupied;
+    
     res.json({
-      totalSlots: slots.length,
-      occupied: slots.filter(s => s.status === "occupied").length,
-      available: slots.filter(s => s.status === "available").length,
+      totalSlots: currentSlotStatus.totalSlots,
+      occupied,
+      available,
       activeSessions: activeSessions[0].count,
-      slots: slots
+      slots: currentSlotStatus.slots,
+      lastUpdate: currentSlotStatus.lastUpdate
     });
   } catch (error) {
     console.error("ESP32 status error:", error);

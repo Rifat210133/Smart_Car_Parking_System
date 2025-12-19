@@ -29,12 +29,12 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 #define IR_SLOT2 33  // IR sensor for slot 2
 
 /* --------- VARIABLES ---------- */
-String activeUID = "";
-unsigned long entryTime = 0;
-bool carInside = false;
+const int MAX_CARS = 10;  // Maximum number of cars that can be tracked
+String activeUIDs[MAX_CARS];  // Array to store active RFIDs
+unsigned long entryTimes[MAX_CARS];  // Array to store entry times
+int activeCarCount = 0;  // Number of cars currently inside
 unsigned long lastScanTime = 0;
 int totalSlots = 2;  // Total parking slots available
-int occupiedCount = 0;  // Count of cars currently inside (not left yet)
 
 // Slot monitoring variables
 bool slot1Occupied = false;
@@ -273,8 +273,8 @@ void updateLCDDisplay() {
   if (slot1Occupied) physicallyOccupied++;
   if (slot2Occupied) physicallyOccupied++;
   
-  // Available slots = total - physically occupied - cars entered but not parked yet
-  int availableSlots = totalSlots - physicallyOccupied - occupiedCount;
+  // Available slots = total - physically occupied
+  int availableSlots = totalSlots - physicallyOccupied;
   if (availableSlots < 0) availableSlots = 0;
 
   lcd.clear();
@@ -316,34 +316,38 @@ void updateSlotStatus() {
     Serial.println(slot2Occupied ? "OCCUPIED" : "FREE");
 
     // Send update to server
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http;
-      String url = String(serverURL) + "/update-slots";
-      
-      http.begin(url);
-      http.addHeader("Content-Type", "application/json");
-      
-      // Create JSON payload with slot statuses
-      String payload = "{\"slots\":[";
-      payload += "{\"slotNumber\":\"A01\",\"status\":\"" + String(slot1Occupied ? "occupied" : "available") + "\"},";
-      payload += "{\"slotNumber\":\"A02\",\"status\":\"" + String(slot2Occupied ? "occupied" : "available") + "\"}";
-      payload += "]}";
-      
-      Serial.println("Updating server...");
-      Serial.println("Payload: " + payload);
-      
-      int httpCode = http.POST(payload);
-      
-      if (httpCode > 0) {
-        String response = http.getString();
-        Serial.println("Server response: " + response);
-      } else {
-        Serial.print("Update failed: ");
-        Serial.println(httpCode);
-      }
-      
-      http.end();
+    sendSlotUpdateToServer();
+  }
+}
+
+void sendSlotUpdateToServer() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(serverURL) + "/update-slots";
+    
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    
+    // Create JSON payload with slot statuses
+    String payload = "{\"slots\":[";
+    payload += "{\"slotNumber\":\"A01\",\"status\":\"" + String(slot1Occupied ? "occupied" : "available") + "\"},";
+    payload += "{\"slotNumber\":\"A02\",\"status\":\"" + String(slot2Occupied ? "occupied" : "available") + "\"}";
+    payload += "]}";
+    
+    Serial.println("Updating server...");
+    Serial.println("Payload: " + payload);
+    
+    int httpCode = http.POST(payload);
+    
+    if (httpCode > 0) {
+      String response = http.getString();
+      Serial.println("Server response: " + response);
+    } else {
+      Serial.print("Update failed: ");
+      Serial.println(httpCode);
     }
+    
+    http.end();
   }
 }
 
@@ -382,6 +386,16 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Smart Parking");
   delay(3000);
+  
+  // Read initial IR sensor state and sync with server
+  Serial.println("Syncing initial slot status with server...");
+  slot1Occupied = (digitalRead(IR_SLOT1) == LOW);
+  slot2Occupied = (digitalRead(IR_SLOT2) == LOW);
+  Serial.print("Initial Slot 1: ");
+  Serial.println(slot1Occupied ? "OCCUPIED" : "FREE");
+  Serial.print("Initial Slot 2: ");
+  Serial.println(slot2Occupied ? "OCCUPIED" : "FREE");
+  sendSlotUpdateToServer();
 }
 
 void loop() {
@@ -402,8 +416,8 @@ void loop() {
     lastSlotUpdateTime = millis();
   }
 
-  // Update LCD display periodically (only when no car activity)
-  if (!carInside && millis() - lastLCDUpdateTime > LCD_UPDATE_INTERVAL) {
+  // Update LCD display periodically
+  if (millis() - lastLCDUpdateTime > LCD_UPDATE_INTERVAL) {
     updateLCDDisplay();
     lastLCDUpdateTime = millis();
   }
@@ -416,7 +430,16 @@ void loop() {
   lastScanTime = millis();
 
   /* -------- ENTRY -------- */
-  if (!carInside) {
+  // Check if this RFID is already inside
+  bool alreadyInside = false;
+  for (int i = 0; i < activeCarCount; i++) {
+    if (activeUIDs[i] == uid) {
+      alreadyInside = true;
+      break;
+    }
+  }
+  
+  if (!alreadyInside) {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("Verifying...");
@@ -428,10 +451,12 @@ void loop() {
       
       openGate5Sec();
       
-      entryTime = millis();
-      activeUID = uid;
-      carInside = true;
-      occupiedCount++;  // Increment occupied count
+      // Add to active cars array if there's space
+      if (activeCarCount < MAX_CARS) {
+        activeUIDs[activeCarCount] = uid;
+        entryTimes[activeCarCount] = millis();
+        activeCarCount++;
+      }
 
       lcd.clear();
       lcd.setCursor(0, 0);
@@ -439,53 +464,60 @@ void loop() {
       lcd.setCursor(0, 1);
       lcd.print("Drive Safely");
       delay(2000);
-      
-      // Reset to normal display cycle
-      lastLCDUpdateTime = millis();
-      showWelcome = true;
     }
   }
 
   /* -------- EXIT -------- */
-  else if (carInside && uid == activeUID) {
-    unsigned long durationMin = (millis() - entryTime) / 60000;
-    if (durationMin == 0) durationMin = 1;
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Processing Exit");
-    lcd.setCursor(0, 1);
-    lcd.print("Duration: ");
-    lcd.print(durationMin);
-    lcd.print("min");
+  else if (alreadyInside) {
+    // Find the car's entry time
+    int carIndex = -1;
+    unsigned long entryTime = 0;
+    for (int i = 0; i < activeCarCount; i++) {
+      if (activeUIDs[i] == uid) {
+        carIndex = i;
+        entryTime = entryTimes[i];
+        break;
+      }
+    }
     
-    delay(2000);
-
-    if (callExitAPI(uid, durationMin)) {
-      delay(2000);  // Show "Exit Success!" and fee message
-      
-      openGate5Sec();
-
-      Serial.print("PARK TIME (min): ");
-      Serial.println(durationMin);
-
-      // Reset system
-      carInside = false;
-      activeUID = "";
-      entryTime = 0;
-      occupiedCount--;  // Decrement occupied count
-      if (occupiedCount < 0) occupiedCount = 0;
+    if (carIndex >= 0) {
+      unsigned long durationMin = (millis() - entryTime) / 60000;
+      if (durationMin == 0) durationMin = 1;
 
       lcd.clear();
       lcd.setCursor(0, 0);
-      lcd.print("Thank You!");
+      lcd.print("Processing Exit");
       lcd.setCursor(0, 1);
-      lcd.print("Drive Safely");
-      delay(2000);
+      lcd.print("Duration: ");
+      lcd.print(durationMin);
+      lcd.print("min");
       
-      // Reset to normal display cycle
-      lastLCDUpdateTime = millis();
-      showWelcome = true;
+      delay(2000);
+
+      if (callExitAPI(uid, durationMin)) {
+        delay(2000);  // Show "Exit Success!" and fee message
+        
+        openGate5Sec();
+
+        Serial.print("PARK TIME (min): ");
+        Serial.println(durationMin);
+
+        // Remove this car from active array
+        for (int i = carIndex; i < activeCarCount - 1; i++) {
+          activeUIDs[i] = activeUIDs[i + 1];
+          entryTimes[i] = entryTimes[i + 1];
+        }
+        activeCarCount--;
+        activeUIDs[activeCarCount] = "";  // Clear last slot
+        entryTimes[activeCarCount] = 0;
+
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Thank You!");
+        lcd.setCursor(0, 1);
+        lcd.print("Drive Safely");
+        delay(2000);
+      }
     }
   }
 
@@ -497,9 +529,5 @@ void loop() {
     lcd.setCursor(0, 1);
     lcd.print("Access Denied");
     delay(2000);
-    
-    // Reset to normal display cycle
-    lastLCDUpdateTime = millis();
-    showWelcome = true;
   }
 }
